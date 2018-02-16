@@ -7,12 +7,24 @@ See the following URL for more info and the latest version:
 https://github.com/snarez/ida-efiutils
 """
 
-import re
+import copy
 import struct
-from idaapi import *
-from idautils import *
-from idc import *
+
+import idaapi
+import idautils
+import ida_bytes
+import ida_entry
+import ida_idp
+import ida_kernwin
+import ida_lines
+import ida_name
+import ida_pro
+import ida_segment
+import ida_struct
+import ida_ua
+
 import efiguids
+
 
 MAX_STACK_DEPTH = 1
 IMAGE_HANDLE_NAME       = 'gImageHandle'
@@ -24,6 +36,7 @@ RUNTIME_SERVICES_NAME   = 'gRuntimeServices'
 RUNTIME_SERVICES_STRUCT = 'EFI_RUNTIME_SERVICES'
 
 local_guids = { }
+
 
 class GUID:
     Data1 = None
@@ -64,6 +77,7 @@ class GUID:
         d = self.Data4
         return [self.Data1, self.Data2, self.Data3, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]]
 
+
 def go():
     rename_tables()
     update_structs()
@@ -86,63 +100,66 @@ def rename_tables():
     regs['bs'] = []
     regs['rs'] = []
 
-    entry = GetEntryOrdinal(0)
+    entry = ida_entry.get_entry_ordinal(0)
 
     rename_tables_internal(entry, regs)
 
 
-def rename_tables_internal(function, regs, stackdepth=0):
+def rename_tables_internal(ea, regs, stackdepth=0):
     names = {'im': IMAGE_HANDLE_NAME, 'st': SYSTEM_TABLE_NAME, 'bs': BOOT_SERVICES_NAME, 'rs': RUNTIME_SERVICES_NAME}
 
-    print "Processing function at 0x%x" % function
+    print "Processing function at 0x{:08x}".format(ea)
  
-    for item in FuncItems(function):
-        #print "regs = " + str(regs)
+    for item in idautils.FuncItems(ea):
+        inst = idautils.DecodeInstruction(item)
+
         # Bail out if we hit a call
-        if GetMnem(item) == "call":
+        if inst.get_canon_mnem() == "call":
             if stackdepth == MAX_STACK_DEPTH:
                 print "  - Hit stack depth limit, bailing!"
                 return
             else:
-                if GetOpType(item, 0) in [o_imm, o_far, o_near]:
-                    rename_tables_internal(LocByName(GetOpnd(item, 0)), regs, stackdepth+1)
+                if inst.Op1.type in [ida_ua.o_imm, ida_ua.o_far, ida_ua.o_near]:
+                    # TODO : Currently assuming that the registry will be inaffected by calls
+                    rename_tables_internal(inst.Op1.addr, copy.deepcopy(regs), stackdepth+1)
                 else:
                     print "  - Can't follow call, bailing!"
                     return
 
-        if GetMnem(item) in ["mov", "lea"]:
+        if inst.get_canon_mnem() in ["mov", "lea"]:
             # Rename data
             for key in names:
-                if GetOpnd(item, 1) in regs[key] and GetOpType(item, 0) == o_mem:
-                    print "  - Found a copy to a memory address for %s, updating: %s" % (names[key], GetDisasm(item))
-                    MakeName(LocByName(GetOpnd(item, 0).split(":")[-1]), names[key])
+                if get_reg_str(inst.Op2) in regs[key] and inst.Op1.type == ida_ua.o_mem:
+                    print "  - Found a copy to a memory address for {}, updating: {}".format(names[key], disasm(inst.ea))
+                    ida_name.set_name(inst.Op1.addr, names[key])
                     break
 
             # Eliminate overwritten registers
             for key in names:
-                if GetOpnd(item, 0) in regs[key] and GetOpnd(item, 1) not in regs[key]:
-                    print "  - Untracking register %s for %s: %s" % (GetOpnd(item, 0), names[key], GetDisasm(item))
-                    regs[key].remove(GetOpnd(item, 0))
+                if get_reg_str(inst.Op1) in regs[key] and get_reg_str(inst.Op2) not in regs[key]:
+                    print "  - Untracking register {} for {}: {}".format(get_reg_str(inst.Op1), names[key], disasm(inst.ea))
+                    regs[key].remove(get_reg_str(inst.Op1))
 
             # Keep track of registers containing the EFI tables etc
-            if GetOpnd(item, 1) in regs['im'] and GetOpType(item, 0) == o_reg and GetOpnd(item, 0) not in regs['im']:
+            if get_reg_str(inst.Op2) in regs['im'] and inst.Op1.type == ida_ua.o_reg and get_reg_str(inst.Op1) not in regs['im']:
                 # A tracked register was copied to a new register, track the new one
-                print "  - Tracking register %s for image handle: %s" % (GetOpnd(item, 0), GetDisasm(item))
-                regs['im'].append(GetOpnd(item, 0))
-            if GetOpnd(item, 1) in regs['st'] and GetOpType(item, 0) == o_reg and GetOpnd(item, 0) not in regs['st']:
+                print "  - Tracking register {} for image handle: {}".format(get_reg_str(inst.Op1), disasm(inst.ea))
+                regs['im'].append(get_reg_str(inst.Op1))
+            if get_reg_str(inst.Op2) in regs['st'] and inst.Op1.type == ida_ua.o_reg and get_reg_str(inst.Op1) not in regs['st']:
                 # A tracked register was copied to a new register, track the new one
-                print "  - Tracking register %s for system table: %s" % (GetOpnd(item, 0), GetDisasm(item))
-                regs['st'].append(GetOpnd(item, 0))
-            if GetOpType(item, 1) == o_displ and reg_from_displ(GetOpnd(item, 1)) in regs['st']:
+                print "  - Tracking register {} for system table: {}".format(get_reg_str(inst.Op1), disasm(inst.ea))
+                regs['st'].append(get_reg_str(inst.Op1))
+            if inst.Op2.type == ida_ua.o_displ and ida_idp.get_reg_name(inst.Op2.reg, 8) in regs['st']:
                 # A tracked register was used in a right operand with a displacement
-                offset = GetOperandValue(item, 1)
+                offset = inst.Op2.addr
                 if offset == 0x60:
-                    print "  - Tracking register %s for boot services table: %s" % (GetOpnd(item, 0), GetDisasm(item))
-                    regs['bs'].append(GetOpnd(item, 0))
+                    print "  - Tracking register {} for boot services table: {}".format(get_reg_str(inst.Op1), disasm(inst.ea))
+                    regs['bs'].append(get_reg_str(inst.Op1))
                 elif offset == 0x58:
-                    print "  - Tracking register %s for runtime services table: %s" % (GetOpnd(item, 0), GetDisasm(item))
-                    regs['rs'].append(GetOpnd(item, 0))
-                OpStroffEx(item, 1, GetStrucIdByName(SYSTEM_TABLE_STRUCT), 0)
+                    print "  - Tracking register {} for runtime services table: {}".format(get_reg_str(inst.Op1), disasm(inst.ea))
+                    regs['rs'].append(get_reg_str(inst.Op1))
+
+                apply_struct_offset(inst, 1, SYSTEM_TABLE_STRUCT)
 
 
 def update_structs():
@@ -150,15 +167,15 @@ def update_structs():
     structs = {SYSTEM_TABLE_NAME: SYSTEM_TABLE_STRUCT, BOOT_SERVICES_NAME: BOOT_SERVICES_STRUCT,
                RUNTIME_SERVICES_NAME: RUNTIME_SERVICES_STRUCT}
     for key in structs:
-        addr = LocByName(key);
+        addr = get_name_ea(0, key);
         if addr == BADADDR:
             print "Couldn't find address for " + key
         else:
-            print "Updating structure references for %s (%s)" % (key, structs[key])
-            update_struct_offsets(addr, structs[key])
+            print "Updating structure references for {} ({})".format(key, structs[key])
+            update_struct_offsets(addr, key, structs[key])
 
 
-def update_struct_offsets(data_addr, struct_name):
+def update_struct_offsets(data_addr, struct_label, struct_name):
     """
     Find xrefs to a struct pointer and change all the offsets to be struct offsets. This is useful for updating
     references to function pointers in EFI tables.
@@ -177,18 +194,19 @@ def update_struct_offsets(data_addr, struct_name):
     """
 
     # Find all xrefs to this data in the code
-    xrefs = list(DataRefsTo(data_addr))
-    print "Found %d xrefs" % len(xrefs)
-
+    xrefs = list(idautils.DataRefsTo(data_addr))
+    print "Found {} xrefs".format(len(xrefs))
+    print "Struct name : {}".format(struct_name)
     # Process xrefs
     for xref in xrefs:
+        inst = idautils.DecodeInstruction(xref)
         # We're only interested in xrefs in code where the left operand is a register, and the right operand is the
         # memory address of our data structure.
-        if GetOpType(xref, 0) == o_reg and GetOpType(xref, 1) == o_mem and GetOperandValue(xref, 1) == struct_name:
-            print "Processing xref from 0x%x: %s" % (xref, GetDisasm(xref))
+        if inst.Op1.type == o_reg and inst.Op2.type == o_mem and ida_name.get_name(inst.Op2.addr) == struct_label:
+            print "Processing xref from 0x{:08x}: {}".format(xref, disasm(xref))
             update_struct_offsets_for_xref(xref, struct_name)
         else:
-            print "Too hard basket - xref from 0x%x: %s" % (xref, GetDisasm(xref))
+            print "Too hard basket - xref from 0x{:08x}: {}".format(xref, disasm(xref))
 
 
 def update_struct_offsets_for_xref(xref, struct_name):
@@ -196,70 +214,76 @@ def update_struct_offsets_for_xref(xref, struct_name):
     regs['hndl'] = []
     regs['ptr'] = []
 
+    inst = idautils.DecodeInstruction(xref)
     # Are we looking at a handle or a pointer?
-    if GetMnem(xref) == "mov":
-        regs['ptr'].append(GetOpnd(xref, 0))
-        print "  - Tracking pointer register %s at 0x%x: %s" % (regs['ptr'][0], xref, GetDisasm(xref))
-    elif GetMnem(xref) == "lea":
-        regs['hndl'].append(GetOpnd(xref, 0))
-        print "  - Tracking handle register %s at 0x%x: %s" % (regs['hndl'][0], xref, GetDisasm(xref))
+    if inst.get_canon_mnem() == "mov":
+        regs['ptr'].append(get_reg_str(inst.Op1))
+        print "  - Tracking pointer register {} at 0x{:08x}: {}".format(regs['ptr'][0], xref, disasm(xref))
+    elif inst.get_canon_mnem() == "lea":
+        regs['hndl'].append(get_reg_str(inst.Op1))
+        print "  - Tracking handle register {} at 0x{:08x}: {}".format(regs['hndl'][0], xref, disasm(xref))
 
     # Get the rest of the instructions in this function
-    items = list(FuncItems(xref))
+    items = list(idautils.FuncItems(xref))
     if len(items):
         idx = items.index(xref)+1
         items = items[idx:]
     else:
-        print "  - Xref at 0x%x wasn't marked as a function" % xref
-        cur = next_head(xref, idaapi.cvar.inf.maxEA)
+        print "  - Xref at 0x{:08x} wasn't marked as a function".format(xref)
+        cur = ida_bytes.next_head(xref, idaapi.cvar.inf.maxEA)
         while True:
             if cur not in items:
                 items.append(cur)
-                print "adding 0x%x: %s" % (cur, GetDisasm(cur))
-            if GetMnem(cur) in ['call', 'jmp', 'retn']:
+                print "adding 0x{:08x}: ".format(cur, disasm(cur))
+
+            inst = idautils.DecodeInstruction(cur)
+            if inst.get_canon_mnem() in ['call', 'jmp', 'retn']:
                 break
-            cur = next_head(cur, idaapi.cvar.inf.maxEA)
+            cur = ida_bytes.next_head(cur, idaapi.cvar.inf.maxEA)
 
     # Iterate through the rest of the instructions in this function looking for tracked registers with a displacement
     for item in items:
         regs['nhndl'] = []
         regs['nptr'] = []
 
+        inst = idautils.DecodeInstruction(item)
         # Update any call instruction with a displacement from our register
-        for op in range(0, 2):
-            if GetOpType(item, op) == o_displ and reg_from_displ(GetOpnd(item, op)) in regs['ptr']:
-                print "  - Updating operand %d in instruction at 0x%x: %s" % (op, item, GetDisasm(item))
-                OpStroffEx(item, op, GetStrucIdByName(struct_name), 0)
+        for op_no, op in enumerate(inst.Operands):
+            if op_no == 2:
+                break
+            if op.type == o_displ and ida_idp.get_reg_name(op.reg, 8) in regs['ptr']:
+                print "  - Updating operand {} in instruction at 0x{:08x}: {}".format(get_op_str(inst.ea, op_no), item, disasm(item))
+                apply_struct_offset(inst, op_no, struct_name)
 
         # If we find a mov instruction that copies a tracked register, track the new register
-        if GetMnem(item) == 'mov':
-            if GetOpnd(item, 1) in regs['ptr'] and GetOpnd(item, 0) not in regs['ptr']:
-                print "  - Copied tracked register at 0x%x, tracking register %s" % (item, GetOpnd(item, 0))
-                regs['ptr'].append(GetOpnd(item, 0))
-                regs['nptr'].append(GetOpnd(item, 0))
-            if GetOpnd(item, 1) in regs['hndl'] and GetOpnd(item, 0) not in regs['hndl']:
-                print "  - Copied tracked register at 0x%x, tracking register %s" % (item, GetOpnd(item, 0))
-                regs['hndl'].append(GetOpnd(item, 0))
-                regs['nhndl'].append(GetOpnd(item, 0))
+        if inst.get_canon_mnem() == 'mov':
+            if get_reg_str(inst.Op2) in regs['ptr'] and get_reg_str(inst.Op1) not in regs['ptr']:
+                print "  - Copied tracked register at 0x{:08x}, tracking register {}".format(item, get_reg_str(inst.Op1))
+                regs['ptr'].append(get_reg_str(inst.Op1))
+                regs['nptr'].append(get_reg_str(inst.Op1))
+            if get_reg_str(inst.Op2) in regs['hndl'] and get_reg_str(inst.Op1) not in regs['hndl']:
+                print "  - Copied tracked register at 0x{:08x}, tracking register {}".format(item, get_reg_str(inst.Op1))
+                regs['hndl'].append(get_reg_str(inst.Op1))
+                regs['nhndl'].append(get_reg_str(inst.Op1))
 
         # If we find a mov instruction that dereferences a handle, track the destination register
         for reg in regs['hndl']:
-            if GetOpnd(item, 1) == "[%s]" % reg and GetMnem(item) == 'mov' and GetOpnd(item, 0) not in regs['ptr']:
-                print "  - Found a dereference at 0x%x, tracking register %s" % (item, GetOpnd(item, 0))
-                regs['ptr'].append(GetOpnd(item, 0))
-                regs['nptr'].append(GetOpnd(item, 0))
+            if get_reg_str(inst.Op2) == "[{}]".format(reg) and inst.get_canon_mnem() == 'mov' and get_reg_str(inst.Op1) not in regs['ptr']:
+                print "  - Found a dereference at 0x{:08x}, tracking register {}".format(item, get_reg_str(inst.Op1))
+                regs['ptr'].append(get_reg_str(inst.Op1))
+                regs['nptr'].append(get_reg_str(inst.Op1))
 
         # If we've found an instruction that overwrites a tracked register, stop tracking it
-        if GetMnem(item) in ["mov", "lea"] and GetOpType(item, 0) == o_reg:
-            if GetOpnd(item, 0) in regs['ptr'] and GetOpnd(item, 0) not in regs['nptr']:
-                print "  - Untracking pointer register %s: " % GetOpnd(item, 0) + GetDisasm(item)
-                regs['ptr'].remove(GetOpnd(item, 0))
-            elif GetOpnd(item, 0) in regs['hndl'] and GetOpnd(item, 0) not in regs['nhndl']:
-                print "  - Untracking handle register %s: " % GetOpnd(item, 0) + GetDisasm(item)
-                regs['hndl'].remove(GetOpnd(item, 0))
+        if inst.get_canon_mnem() in ["mov", "lea"] and inst.Op1 == o_reg:
+            if get_reg_str(inst.Op1) in regs['ptr'] and get_reg_str(inst.Op1) not in regs['nptr']:
+                print "  - Untracking pointer register {}: ".format(get_reg_str(inst.Op1) + disasm(item))
+                regs['ptr'].remove(get_reg_str(inst.Op1))
+            elif get_reg_str(inst.Op1) in regs['hndl'] and get_reg_str(inst.Op1) not in regs['nhndl']:
+                print "  - Untracking handle register {}: ".format(get_reg_str(inst.Op1) + disasm(item))
+                regs['hndl'].remove(get_reg_str(inst.Op1))
 
         # If we hit a call, just bail
-        if GetMnem(item) == "call":
+        if inst.get_canon_mnem() == "call":
             break
 
         # If we're not tracking any registers, bail
@@ -268,33 +292,42 @@ def update_struct_offsets_for_xref(xref, struct_name):
 
 
 def rename_guids():
+    labels = {}
     # Load GUIDs
     guids = dict((str(GUID(array=v)),k) for k, v in efiguids.GUIDs.iteritems())
     guids.update(dict((v,k) for k, v in local_guids.iteritems()))
 
     # Find all the data segments in this binary
-    for seg in Segments():
-        if isData(GetFlags(seg)):
-            print "Processing data segment at 0x%x" % seg
+    for seg_addr in idautils.Segments():
+        seg = ida_segment.getseg(seg_addr)
+        if seg.type == ida_segment.SEG_DATA:
+            print "Processing data segment at 0x{:08x}".format(seg_addr)
 
             # Find any GUIDs we know about in the data segment
-            addr = seg
-            seg_end = SegEnd(seg)
-            while addr < seg_end:
-                d = [Dword(addr), Dword(addr+0x4), Dword(addr+0x8), Dword(addr+0xC)]
+            cur_addr = seg.start_ea
+            seg_end = seg.end_ea
+            while cur_addr < seg_end:
+                d = [ida_bytes.get_dword(cur_addr), ida_bytes.get_dword(cur_addr+0x4), ida_bytes.get_dword(cur_addr+0x8), ida_bytes.get_dword(cur_addr+0xC)]
                 if (d[0] == 0 and d[1] == 0 and d[2] == 0 and d[3] == 0) or \
                     (d[0] == 0xFFFFFFFF and d[1] == 0xFFFFFFFF and d[2] == 0xFFFFFFFF and d[3] == 0xFFFFFFFF):
                      pass
                 else:
                     guid = GUID(bytes=struct.pack("<LLLL", d[0], d[1], d[2], d[3]))
-                    #print "Checking GUID %s at 0x%x" % (str(guid), addr) 
+                    #print "Checking GUID {} at 0x{:08x}".format(str(guid), cur_addr)
                     gstr = str(guid)
                     if gstr in guids.keys():
-                        print "  - Found GUID %s (%s) at 0x%x" % (gstr, guids[gstr], addr)
-                        MakeName(addr, underscore_to_global(guids[gstr]))
-                addr += 0x08
+                        print "  - Found GUID {} ({}) at 0x{:08x}".format(gstr, guids[gstr], cur_addr)
+                        struct_label = underscore_to_global(guids[gstr])
+                        if labels.get(struct_label) is None:
+                            ida_name.set_name(cur_addr, struct_label)
+                            labels[struct_label] = 1
+                        else:
+                            labels[struct_label] += 1
+                            ida_name.set_name(cur_addr, "{}_{}".format(struct_label, labels[struct_label]))
+
+                cur_addr += 0x08
         else:
-            print "Skipping non-data segment at 0x%x" % seg
+            print "Skipping non-data segment at 0x{:08x}".format(seg_addr)
 
 
 def update_protocols():
@@ -312,31 +345,47 @@ def update_protocol(guid_addr, protocol):
     #     # We're only interested in xrefs in code where the left operand is a register, and the right operand is the
     #     # memory address of our GUID.
     #     if GetOpType(xref, 0) == o_reg and GetOpType(xref, 1) == o_mem and GetOperandValue(xref, 1) == struct_name:
-    #         print "Processing xref from 0x%x: %s" % (xref, GetDisasm(xref))
+    #         print "Processing xref from 0x%x: %s" % (xref, disasm(xref))
     #         update_struct_offsets_for_xref(xref, struct_name)
     #     else:
-    #         print "Too hard basket - xref from 0x%x: %s" % (xref, GetDisasm(xref))
+    #         print "Too hard basket - xref from 0x%x: %s" % (xref, disasm(xref))
 
 
+def get_reg_str(operand):
+    if operand.type == ida_ua.o_reg:
+        # TODO: Find the operand length. Hardcoded to 8 for now.
+        return ida_idp.get_reg_name(operand.reg, 8)
+    return ''
 
+
+def disasm(ea):
+    return ida_lines.tag_remove(ida_lines.generate_disasm_line(ea))
+
+def apply_struct_offset(inst, operand_no, struct_name):
+    path_len = 1
+    path = ida_pro.tid_array(path_len)
+    path[0] = ida_struct.get_struc_id(struct_name)
+    ida_bytes.op_stroff(inst, operand_no, path.cast(), path_len, 0)
 
 def find_struct_refs():
-    isStroff(GetFlags(here()), 0)
+    ida_bytes.is_stroff(ida_bytes.get_full_flags(ida_kernwin.get_screen_ea(), 0))
 
 
 def guid_at_addr(guid_addr):
-    return GUID(bytes=struct.pack("<LLLL", Dword(guid_addr), Dword(guid_addr + 0x4), Dword(guid_addr + 0x8), Dword(guid_addr + 0xC)))
-
-
-def reg_from_displ(displ):
-    """
-    Return the register to which a displacement is relative.
-
-    e.g. qword ptr [rbx+8] -> rbx
-    """
-    m = re.match(r'.*\[(.*)[\+\-]', displ)
-    return m.group(1)
+    return GUID(bytes=struct.pack("<LLLL", ida_bytes.get_dword(guid_addr), ida_bytes.get_dword(guid_addr + 0x4),
+     ida_bytes.get_dword(guid_addr + 0x8), ida_bytes.get_dword(guid_addr + 0xC)))
 
 
 def underscore_to_global(name):
     return 'g'+''.join(list(s.capitalize() for s in name.lower().split('_')))
+
+
+def import_type(type_name):
+    if ida_typeinf.import_type(ida_typeinf.get_idati(), 0, type_name) == 0xffffffffffffffff:
+        return False
+    return True
+
+
+def get_op_str(ea, op_no):
+    return ida_lines.tag_remove(ida_ua.print_operand(ea, op_no))
+
