@@ -21,6 +21,7 @@ import ida_name
 import ida_pro
 import ida_segment
 import ida_struct
+import ida_typeinf
 import ida_ua
 
 import efiguids
@@ -86,7 +87,8 @@ class GUID:
 def go():
     rename_tables()
     update_structs()
-    rename_guids()
+    guid_labels = rename_guids()
+    update_protocols(guid_labels)
 
 
 def rename_tables():
@@ -216,7 +218,7 @@ def update_structs():
             update_struct_offsets(addr, key, structs[key])
 
 
-def update_struct_offsets(data_addr, struct_label, struct_name):
+def update_struct_offsets(data_addr, struct_label, struct_name, pad=0):
     """
     Find xrefs to a struct pointer and change all the offsets to be struct
     offsets. This is useful for updating references to function pointers in
@@ -237,8 +239,8 @@ def update_struct_offsets(data_addr, struct_label, struct_name):
 
     # Find all xrefs to this data in the code
     xrefs = list(idautils.DataRefsTo(data_addr))
-    print "Found {} xrefs".format(len(xrefs))
-    print "Struct name : {}".format(struct_name)
+    print "{}Found {} xrefs".format(' ' * pad, len(xrefs))
+    print "{}Struct name : {}".format(' ' * pad, struct_name)
     # Process xrefs
     for xref in xrefs:
         inst = idautils.DecodeInstruction(xref)
@@ -247,17 +249,17 @@ def update_struct_offsets(data_addr, struct_label, struct_name):
         # structure.
         if inst.Op1.type == o_reg and inst.Op2.type == o_mem and \
            ida_name.get_name(inst.Op2.addr) == struct_label:
-            print "Processing xref from 0x{:08x}: {}".format(
-                xref, disasm(xref)
+            print "{}Processing xref from 0x{:08x}: {}".format(
+                ' ' * pad, xref, disasm(xref)
             )
-            update_struct_offsets_for_xref(xref, struct_name)
+            update_struct_offsets_for_xref(xref, struct_name, pad)
         else:
-            print "Too hard basket - xref from 0x{:08x}: {}".format(
-                xref, disasm(xref)
+            print "{}Too hard basket - xref from 0x{:08x}: {}".format(
+                ' ' * pad, xref, disasm(xref)
             )
 
 
-def update_struct_offsets_for_xref(xref, struct_name):
+def update_struct_offsets_for_xref(xref, struct_name, pad=0):
     regs = {}
     regs['hndl'] = []
     regs['ptr'] = []
@@ -266,32 +268,16 @@ def update_struct_offsets_for_xref(xref, struct_name):
     # Are we looking at a handle or a pointer?
     if inst.get_canon_mnem() == "mov":
         regs['ptr'].append(get_reg_str(inst.Op1))
-        print "  - Tracking pointer register {} at 0x{:08x}: {}".format(
-            regs['ptr'][0], xref, disasm(xref)
+        print "{}  - Tracking pointer register {} at 0x{:08x}: {}".format(
+            ' ' * pad, regs['ptr'][0], xref, disasm(xref)
         )
     elif inst.get_canon_mnem() == "lea":
         regs['hndl'].append(get_reg_str(inst.Op1))
-        print "  - Tracking handle register {} at 0x{:08x}: {}".format(
-            regs['hndl'][0], xref, disasm(xref)
+        print "{}  - Tracking handle register {} at 0x{:08x}: {}".format(
+            ' ' * pad, regs['hndl'][0], xref, disasm(xref)
         )
 
-    # Get the rest of the instructions in this function
-    items = list(idautils.FuncItems(xref))
-    if len(items):
-        idx = items.index(xref)+1
-        items = items[idx:]
-    else:
-        print "  - Xref at 0x{:08x} wasn't marked as a function".format(xref)
-        cur = ida_bytes.next_head(xref, idaapi.cvar.inf.maxEA)
-        while True:
-            if cur not in items:
-                items.append(cur)
-                print "adding 0x{:08x}: ".format(cur, disasm(cur))
-
-            inst = idautils.DecodeInstruction(cur)
-            if inst.get_canon_mnem() in ['call', 'jmp', 'retn']:
-                break
-            cur = ida_bytes.next_head(cur, idaapi.cvar.inf.maxEA)
+    items = get_func_items_from_xref(xref)
 
     # Iterate through the rest of the instructions in this function looking
     # for tracked registers with a displacement
@@ -306,9 +292,10 @@ def update_struct_offsets_for_xref(xref, struct_name):
                 break
             if op.type == o_displ and \
                ida_idp.get_reg_name(op.reg, 8) in regs['ptr']:
-                print("  - Updating operand {} in instruction at " +
+                print("{}  - Updating operand {} in instruction at " +
                       "0x{:08x}: {}").format(
-                        get_op_str(inst.ea, op_no), item, disasm(item)
+                        ' ' * pad, get_op_str(inst.ea, op_no),
+                        item, disasm(item)
                 )
                 apply_struct_offset(inst, op_no, struct_name)
 
@@ -317,17 +304,17 @@ def update_struct_offsets_for_xref(xref, struct_name):
         if inst.get_canon_mnem() == 'mov':
             if get_reg_str(inst.Op2) in regs['ptr'] and \
                get_reg_str(inst.Op1) not in regs['ptr']:
-                print("  - Copied tracked register at 0x{:08x}, " +
+                print("{}  - Copied tracked register at 0x{:08x}, " +
                       "tracking register {}").format(
-                      item, get_reg_str(inst.Op1)
+                      ' ' * pad, item, get_reg_str(inst.Op1)
                 )
                 regs['ptr'].append(get_reg_str(inst.Op1))
                 regs['nptr'].append(get_reg_str(inst.Op1))
             if get_reg_str(inst.Op2) in regs['hndl'] and \
                get_reg_str(inst.Op1) not in regs['hndl']:
-                print("  - Copied tracked register at 0x{:08x}, " +
+                print("{}  - Copied tracked register at 0x{:08x}, " +
                       "tracking register {}").format(
-                      item, get_reg_str(inst.Op1)
+                      ' ' * pad, item, get_reg_str(inst.Op1)
                 )
                 regs['hndl'].append(get_reg_str(inst.Op1))
                 regs['nhndl'].append(get_reg_str(inst.Op1))
@@ -338,9 +325,9 @@ def update_struct_offsets_for_xref(xref, struct_name):
             if get_reg_str(inst.Op2) == "[{}]".format(reg) and \
                inst.get_canon_mnem() == 'mov' and \
                get_reg_str(inst.Op1) not in regs['ptr']:
-                print("  - Found a dereference at 0x{:08x}, " +
+                print("{}  - Found a dereference at 0x{:08x}, " +
                       "tracking register {}").format(
-                      item, get_reg_str(inst.Op1)
+                      ' ' * pad, item, get_reg_str(inst.Op1)
                 )
                 regs['ptr'].append(get_reg_str(inst.Op1))
                 regs['nptr'].append(get_reg_str(inst.Op1))
@@ -350,14 +337,14 @@ def update_struct_offsets_for_xref(xref, struct_name):
         if inst.get_canon_mnem() in ["mov", "lea"] and inst.Op1 == o_reg:
             if get_reg_str(inst.Op1) in regs['ptr']:
                 if get_reg_str(inst.Op1) not in regs['nptr']:
-                    print "  - Untracking pointer register {}: ".format(
-                        get_reg_str(inst.Op1) + disasm(item)
+                    print "{}  - Untracking pointer register {}: ".format(
+                        ' ' * pad, get_reg_str(inst.Op1) + disasm(item)
                     )
                 regs['ptr'].remove(get_reg_str(inst.Op1))
             elif get_reg_str(inst.Op1) in regs['hndl']:
                 if get_reg_str(inst.Op1) not in regs['nhndl']:
-                    print "  - Untracking handle register {}: ".format(
-                        get_reg_str(inst.Op1) + disasm(item)
+                    print "{}  - Untracking handle register {}: ".format(
+                        ' ' * pad, get_reg_str(inst.Op1) + disasm(item)
                     )
                     regs['hndl'].remove(get_reg_str(inst.Op1))
 
@@ -407,45 +394,129 @@ def rename_guids():
                         print "  - Found GUID {} ({}) at 0x{:08x}".format(
                             gstr, guids[gstr], cur_addr
                         )
-                        struct_label = underscore_to_global(guids[gstr])
-                        if labels.get(struct_label) is None:
-                            ida_name.set_name(cur_addr, struct_label)
-                            labels[struct_label] = 1
-                        else:
-                            labels[struct_label] += 1
-                            ida_name.set_name(cur_addr, "{}_{}".format(
-                                struct_label, labels[struct_label])
-                            )
-
+                        struct_label = get_next_unused_label(
+                            underscore_to_global(guids[gstr])
+                        )
+                        ida_name.set_name(cur_addr, struct_label)
+                        labels[struct_label] = (cur_addr, guids[gstr])
                 cur_addr += 0x08
         else:
             print "Skipping non-data segment at 0x{:08x}".format(seg_addr)
 
-
-def update_protocols():
-    pass
+    return labels
 
 
-def update_protocol(guid_addr, protocol):
-    pass
-    # # Find xrefs to this GUID
-    # xrefs = list(DataRefsTo(guid_addr))
-    # print "Found %d xrefs to GUID %s" % \
-    #   (len(xrefs), str(guid_at_addr(guid_addr)))
+def update_protocols(guid_labels):
+    update_locate_protocols_interfaces(guid_labels)
 
-    # # Process xrefs
-    # for xref in xrefs:
-    #     # We're only interested in xrefs in code where the left operand is a
-    #     # register, and the right operand is the
-    #     # memory address of our GUID.
-    #     if GetOpType(xref, 0) == o_reg and \
-    #        GetOpType(xref, 1) == o_mem and \
-    #        GetOperandValue(xref, 1) == struct_name:
-    #         print "Processing xref from 0x%x: %s" % (xref, disasm(xref))
-    #         update_struct_offsets_for_xref(xref, struct_name)
-    #     else:
-    #         print "Too hard basket - xref from 0x%x: %s" % \
-    #           (xref, disasm(xref))
+
+def update_locate_protocols_interfaces(guid_labels):
+    """
+    Find the interface parameter for LocateProtocol function.
+    Rename the Interface global variable.
+    Update struct offsets for the interface xref
+
+    LocateProtocol call example:
+    ----
+    mov     rax, cs:gBootServices
+    lea     r8, Interface   ; Interface
+    lea     rcx, gEfiHiiDatabaseProtocolGuid ; Protocol
+    xor     edx, edx        ; Registration
+    call    [rax+EFI_BOOT_SERVICES.LocateProtocol
+    ----
+    """
+    print "Populating LocateProtocol interfaces"
+    for guid_label, values in guid_labels.iteritems():
+        addr, guid_struct = values
+        xrefs = list(idautils.DataRefsTo(addr))
+        for xref in xrefs:
+            if is_locate_protocol_param(xref):
+                interface_addr = get_interface_param_addr(xref)
+                if interface_addr is not None:
+                    protocol_struct = \
+                        protocol_struct_from_guid_struct(guid_struct)
+                    protocol_label = get_next_unused_label(
+                        underscore_to_global(protocol_struct)
+                    )
+                    ida_name.set_name(interface_addr, protocol_label)
+                    print("  - Found interface of type '{}' at 0x{:08x} " +
+                          "Updating offsets...").format(
+                        protocol_struct, interface_addr
+                    )
+                    update_struct_offsets(
+                        interface_addr, protocol_label, protocol_struct, 6
+                    )
+
+
+def is_locate_protocol_param(xref):
+    """
+    Returns True if the xref is the 'Protocol' parameter of this function :
+    typedef EFI_STATUS LocateProtocol (
+        IN  EFI_GUID *Protocol,
+        IN  VOID     *Registration OPTIONAL,
+        OUT VOID     **Interface
+    );
+    """
+    inst = idautils.DecodeInstruction(xref)
+
+    # Must be 'lea rcx, gSmtGuid'
+    if inst.get_canon_mnem() != 'lea' or inst.Op1.type != o_reg or \
+       inst.Op1.reg != ida_idp.str2reg('rcx'):
+        return False
+
+    # Look up to 5 instructions ahead to find:
+    # call    [rax+EFI_BOOT_SERVICES.LocateProtocol]
+    for addr in get_func_items_from_xref(xref)[:5]:
+        inst = idautils.DecodeInstruction(addr)
+        if inst.get_canon_mnem() == 'call':
+            if inst.Op1.type == o_displ and \
+               get_operand_struct_name(inst, 0) == 'EFI_BOOT_SERVICES' and \
+               inst.Op1.addr == 0x140:
+                return True
+            else:
+                # Bail out if we hit a call that is not LocateProtocol
+                break
+
+    return False
+
+
+def get_interface_param_addr(xref):
+    """
+    Find the interface address looking for this instruction :
+    lea     r8, Interface
+    """
+    # Check up to 3 instructions before
+    next_addr = xref
+    for i in range(3):
+        inst = idautils.DecodePreviousInstruction(next_addr)
+        if inst.get_canon_mnem() == 'call':
+            break
+        elif is_lea_r8_mem_inst(inst):
+            return inst.Op2.addr
+        next_addr = inst.ea
+
+    # Check up to 3 instructions forward
+    for addr in get_func_items_from_xref(xref)[:3]:
+        inst = idautils.DecodeInstruction(addr)
+        if inst.get_canon_mnem() == 'call':
+            break
+        elif is_lea_r8_mem_inst(inst):
+            return inst.Op2.addr
+
+    return None
+
+
+def is_lea_r8_mem_inst(inst):
+    if inst.get_canon_mnem() == 'lea':
+        if inst.Op1.type == o_reg:
+            if inst.Op1.reg == ida_idp.str2reg('r8'):
+                if inst.Op2.type == o_mem:
+                    return True
+    return False
+
+
+def protocol_struct_from_guid_struct(struct_name):
+    return '_'.join(struct_name.split('_')[:-1])
 
 
 def get_reg_str(operand):
@@ -460,10 +531,21 @@ def disasm(ea):
 
 
 def apply_struct_offset(inst, operand_no, struct_name):
+    if not import_type(struct_name):
+        print "ERROR: Can't import '{}'".format(struct_name)
+        return
     path_len = 1
     path = ida_pro.tid_array(path_len)
     path[0] = ida_struct.get_struc_id(struct_name)
     ida_bytes.op_stroff(inst, operand_no, path.cast(), path_len, 0)
+
+
+def get_operand_struct_name(inst, op_no):
+    path_len = 1
+    path = ida_pro.tid_array(path_len)
+    if ida_bytes.get_stroff_path(path.cast(), None, inst.ea, op_no):
+        return ida_struct.get_struc_name(path[0])
+    return ''
 
 
 def find_struct_refs():
@@ -485,5 +567,45 @@ def underscore_to_global(name):
     return 'g'+''.join(list(s.capitalize() for s in name.lower().split('_')))
 
 
+def import_type(type_name):
+    if ida_typeinf.import_type(ida_typeinf.get_idati(), 0, type_name) == \
+       0xffffffffffffffff:
+        return False
+    return True
+
+
 def get_op_str(ea, op_no):
     return ida_lines.tag_remove(ida_ua.print_operand(ea, op_no))
+
+
+def get_next_unused_label(label):
+    i = 2
+    while True:
+        if ida_name.get_name_ea(0, label) == 0xffffffffffffffff:
+            return label
+        label = "{}_{}".format(label, i)
+        i += 1
+
+
+def get_func_items_from_xref(xref):
+    """
+    Returns the rest of the instruction from a given xref
+    """
+    items = list(idautils.FuncItems(xref))
+    if len(items):
+        idx = items.index(xref)+1
+        items = items[idx:]
+    else:
+        print "  - Xref at 0x{:08x} wasn't marked as a function".format(xref)
+        cur = ida_bytes.next_head(xref, idaapi.cvar.inf.maxEA)
+        while True:
+            if cur not in items:
+                items.append(cur)
+                print "adding 0x{:08x}: ".format(cur, disasm(cur))
+
+            inst = idautils.DecodeInstruction(cur)
+            if inst.get_canon_mnem() in ['call', 'jmp', 'retn']:
+                break
+            cur = ida_bytes.next_head(cur, idaapi.cvar.inf.maxEA)
+
+    return items
