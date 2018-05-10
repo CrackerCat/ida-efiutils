@@ -12,6 +12,7 @@ import struct
 
 import idaapi
 import idautils
+import ida_idaapi
 import ida_bytes
 import ida_entry
 import ida_idp
@@ -208,8 +209,8 @@ def update_structs():
         RUNTIME_SERVICES_NAME: RUNTIME_SERVICES_STRUCT
     }
     for key in structs:
-        addr = get_name_ea(0, key)
-        if addr == BADADDR:
+        addr = ida_name.get_name_ea(0, key)
+        if addr == ida_idaapi.BADADDR:
             print "Couldn't find address for " + key
         else:
             print "Updating structure references for {} ({})".format(
@@ -247,7 +248,8 @@ def update_struct_offsets(data_addr, struct_label, struct_name, pad=0):
         # We're only interested in xrefs in code where the left operand is a
         # register, and the right operand is the memory address of our data
         # structure.
-        if inst.Op1.type == o_reg and inst.Op2.type == o_mem and \
+        if inst.Op1.type == ida_ua.o_reg and \
+           inst.Op2.type == ida_ua.o_mem and \
            ida_name.get_name(inst.Op2.addr) == struct_label:
             print "{}Processing xref from 0x{:08x}: {}".format(
                 ' ' * pad, xref, disasm(xref)
@@ -290,7 +292,7 @@ def update_struct_offsets_for_xref(xref, struct_name, pad=0):
         for op_no, op in enumerate(inst.Operands):
             if op_no == 2:
                 break
-            if op.type == o_displ and \
+            if op.type == ida_ua.o_displ and \
                ida_idp.get_reg_name(op.reg, 8) in regs['ptr']:
                 print("{}  - Updating operand {} in instruction at " +
                       "0x{:08x}: {}").format(
@@ -334,7 +336,8 @@ def update_struct_offsets_for_xref(xref, struct_name, pad=0):
 
         # If we've found an instruction that overwrites a tracked register,
         # stop tracking it
-        if inst.get_canon_mnem() in ["mov", "lea"] and inst.Op1 == o_reg:
+        if inst.get_canon_mnem() in ["mov", "lea"] and \
+           inst.Op1 == ida_ua.o_reg:
             if get_reg_str(inst.Op1) in regs['ptr']:
                 if get_reg_str(inst.Op1) not in regs['nptr']:
                     print "{}  - Untracking pointer register {}: ".format(
@@ -460,7 +463,7 @@ def is_locate_protocol_param(xref):
     inst = idautils.DecodeInstruction(xref)
 
     # Must be 'lea rcx, gSmtGuid'
-    if inst.get_canon_mnem() != 'lea' or inst.Op1.type != o_reg or \
+    if inst.get_canon_mnem() != 'lea' or inst.Op1.type != ida_ua.o_reg or \
        inst.Op1.reg != ida_idp.str2reg('rcx'):
         return False
 
@@ -469,7 +472,7 @@ def is_locate_protocol_param(xref):
     for addr in get_func_items_from_xref(xref)[:5]:
         inst = idautils.DecodeInstruction(addr)
         if inst.get_canon_mnem() == 'call':
-            if inst.Op1.type == o_displ and \
+            if inst.Op1.type == ida_ua.o_displ and \
                get_operand_struct_name(inst, 0) == 'EFI_BOOT_SERVICES' and \
                inst.Op1.addr == 0x140:
                 return True
@@ -508,9 +511,9 @@ def get_interface_param_addr(xref):
 
 def is_lea_r8_mem_inst(inst):
     if inst.get_canon_mnem() == 'lea':
-        if inst.Op1.type == o_reg:
+        if inst.Op1.type == ida_ua.o_reg:
             if inst.Op1.reg == ida_idp.str2reg('r8'):
-                if inst.Op2.type == o_mem:
+                if inst.Op2.type == ida_ua.o_mem:
                     return True
     return False
 
