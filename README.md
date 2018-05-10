@@ -57,6 +57,10 @@ Becomes:
 
 Finds GUIDs in data segments and renames them. 470 protocol GUIDs were pulled out of the TianoCore source, and proprietary Apple (and other vendor) GUIDs will be added as they are encountered.
 
+### `update_protocols()`
+
+Finds protocol's interfaces resolved using the `LocateProtocol` function and applies the struct offsets on calls made to its references.
+
 ### `go()`
 
 Convenience method that does all of the above. 
@@ -65,13 +69,11 @@ Convenience method that does all of the above.
 
 1. Load up your EFI binary in IDA Pro
 
-2. Import `behemoth.h` to define the necessary data structures
+2. Run `efiguids.py` to add it to python's path (or do this by some other method)
 
-3. Add the structures from local types to your IDB
+3. Run `efiutils.py` to add it to python's path (or do this by some other method)
 
-4. Run `efiutils.py` to add it to python's path (or do this by some other method)
-
-5. Have a look at the code/docstrings, but probably:
+4. Have a look at the code/docstrings, but probably:
 
 		import efiutils; efiutils.go()
 
