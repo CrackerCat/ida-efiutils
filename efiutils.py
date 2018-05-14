@@ -56,7 +56,6 @@ class GUID:
             (self.Data1, self.Data2, self.Data3, d40, d41, d42, d43, d44,
                 d45, d46, d47) = struct.unpack("<IHH8B", bytes)
             self.Data4 = [d40, d41, d42, d43, d44, d45, d46, d47]
-            self.bytes = bytes
         elif string is not None:
             s = string.split('-')
             self.Data1 = int(s[0], 16)
@@ -74,7 +73,7 @@ class GUID:
           tuple(self.array())
 
     def bytes(self):
-        return self.bytes
+        return struct.pack("<IHH8B", *self.array())
 
     def string(self):
         return str(self)
