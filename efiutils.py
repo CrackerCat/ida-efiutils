@@ -371,40 +371,38 @@ def rename_guids():
     # Find all the data segments in this binary
     for seg_addr in idautils.Segments():
         seg = ida_segment.getseg(seg_addr)
-        if seg.type == ida_segment.SEG_DATA:
-            print "Processing data segment at 0x{:08x}".format(seg_addr)
+        print "Processing data segment at 0x{:08x}".format(seg_addr)
 
-            # Find any GUIDs we know about in the data segment
-            cur_addr = seg.start_ea
-            seg_end = seg.end_ea
-            while cur_addr < seg_end:
-                d = [ida_bytes.get_dword(cur_addr),
-                     ida_bytes.get_dword(cur_addr+0x4),
-                     ida_bytes.get_dword(cur_addr+0x8),
-                     ida_bytes.get_dword(cur_addr+0xC)]
-                if (d[0] == 0 and d[1] == 0 and d[2] == 0 and d[3] == 0) or \
-                   (
-                    d[0] == 0xFFFFFFFF and d[1] == 0xFFFFFFFF and
-                    d[2] == 0xFFFFFFFF and d[3] == 0xFFFFFFFF
-                   ):
-                    pass
-                else:
-                    guid = GUID(bytes=struct.pack(
-                        "<LLLL", d[0], d[1], d[2], d[3]
-                    ))
-                    gstr = str(guid)
-                    if gstr in guids.keys():
-                        print "  - Found GUID {} ({}) at 0x{:08x}".format(
-                            gstr, guids[gstr], cur_addr
-                        )
-                        struct_label = get_next_unused_label(
-                            underscore_to_global(guids[gstr])
-                        )
-                        ida_name.set_name(cur_addr, struct_label)
-                        labels[struct_label] = (cur_addr, guids[gstr])
-                cur_addr += 0x08
-        else:
-            print "Skipping non-data segment at 0x{:08x}".format(seg_addr)
+        # Find any GUIDs we know about in the data segment
+        cur_addr = seg.start_ea
+        seg_end = seg.end_ea
+        while cur_addr < seg_end:
+            d = [ida_bytes.get_dword(cur_addr),
+                 ida_bytes.get_dword(cur_addr+0x4),
+                 ida_bytes.get_dword(cur_addr+0x8),
+                 ida_bytes.get_dword(cur_addr+0xC)]
+            if (d[0] == 0 and d[1] == 0 and d[2] == 0 and d[3] == 0) or \
+               (
+                d[0] == 0xFFFFFFFF and d[1] == 0xFFFFFFFF and
+                d[2] == 0xFFFFFFFF and d[3] == 0xFFFFFFFF
+               ):
+                pass
+            else:
+                guid = GUID(bytes=struct.pack(
+                    "<LLLL", d[0], d[1], d[2], d[3]
+                ))
+                gstr = str(guid)
+                if gstr in guids.keys():
+                    print "  - Found GUID {} ({}) at 0x{:08x}".format(
+                        gstr, guids[gstr], cur_addr
+                    )
+                    struct_label = get_next_unused_label(
+                        underscore_to_global(guids[gstr])
+                    )
+                    ida_name.set_name(cur_addr, struct_label)
+                    labels[struct_label] = (cur_addr, guids[gstr])
+            cur_addr += 0x08
+
 
     return labels
 
