@@ -28,7 +28,6 @@ import ida_ua
 import efiguids
 
 
-MAX_STACK_DEPTH = 1
 IMAGE_HANDLE_NAME = 'gImageHandle'
 SYSTEM_TABLE_NAME = 'gSystemTable'
 SYSTEM_TABLE_STRUCT = 'EFI_SYSTEM_TABLE'
@@ -112,10 +111,11 @@ def rename_tables():
 
     entry = ida_entry.get_entry_ordinal(0)
 
-    rename_tables_internal(entry, regs)
+    visited = set()
+    rename_tables_internal(entry, regs, visited)
 
 
-def rename_tables_internal(ea, regs, stackdepth=0):
+def rename_tables_internal(ea, regs, visited):
     names = {
         'im': IMAGE_HANDLE_NAME,
         'st': SYSTEM_TABLE_NAME,
@@ -124,23 +124,24 @@ def rename_tables_internal(ea, regs, stackdepth=0):
     }
 
     print "Processing function at 0x{:08x}".format(ea)
+    visited.add(ea)
 
     for item in idautils.FuncItems(ea):
         inst = idautils.DecodeInstruction(item)
 
         # Bail out if we hit a call
         if inst.get_canon_mnem() == "call":
-            if stackdepth == MAX_STACK_DEPTH:
-                print "  - Hit stack depth limit, bailing!"
+            to_visit = inst.Op1.addr
+            if to_visit in visited:
                 return
             else:
                 target_types = [ida_ua.o_imm, ida_ua.o_far, ida_ua.o_near]
                 if inst.Op1.type in target_types:
-                    # TODO : Currently assuming that the registry will be
-                    # inaffected by calls
                     rename_tables_internal(
-                        inst.Op1.addr, copy.deepcopy(regs), stackdepth+1
+                        to_visit, copy.deepcopy(regs), visited
                     )
+                    # Keeps saved registers based on UEFI spec
+                    regs = keep_saved_regs(regs)
                 else:
                     print "  - Can't follow call, bailing!"
                     return
@@ -609,3 +610,11 @@ def get_func_items_from_xref(xref):
             cur = ida_bytes.next_head(cur, idaapi.cvar.inf.maxEA)
 
     return items
+
+
+def keep_saved_regs(regs):
+    saved_regs = ['rbx', 'rbp', 'rdi', 'rsi', 'r12', 'r13', 'r14', 'r15']
+    regs_out = {}
+    for k, registers in regs.iteritems():
+        regs_out[k] = filter(lambda reg: reg in saved_regs, registers)
+    return regs_out
