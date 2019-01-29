@@ -461,6 +461,9 @@ def is_locate_protocol_param(xref):
     """
     inst = idautils.DecodeInstruction(xref)
 
+    if inst is None:
+        return False
+
     # Must be 'lea rcx, gSmtGuid'
     if inst.get_canon_mnem() != 'lea' or inst.Op1.type != ida_ua.o_reg or \
        inst.Op1.reg != ida_idp.str2reg('rcx'):
