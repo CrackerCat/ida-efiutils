@@ -386,7 +386,7 @@ def rename_guids():
                 d[0] == 0xFFFFFFFF and d[1] == 0xFFFFFFFF and
                 d[2] == 0xFFFFFFFF and d[3] == 0xFFFFFFFF
                ):
-                pass
+                cur_addr += 0x10
             else:
                 guid = GUID(bytes=struct.pack(
                     "<LLLL", d[0], d[1], d[2], d[3]
@@ -401,8 +401,9 @@ def rename_guids():
                     )
                     ida_name.set_name(cur_addr, struct_label)
                     labels[struct_label] = (cur_addr, guids[gstr])
-            cur_addr += 0x08
-
+                    cur_addr += 0x10
+                else:
+                    cur_addr += 0x08
 
     return labels
 
