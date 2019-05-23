@@ -112,10 +112,11 @@ def rename_tables():
     entry = ida_entry.get_entry_ordinal(0)
 
     visited = set()
-    rename_tables_internal(entry, regs, visited)
+    renamed = set()
+    rename_tables_internal(entry, regs, visited, renamed)
 
 
-def rename_tables_internal(ea, regs, visited):
+def rename_tables_internal(ea, regs, visited, renamed):
     names = {
         'im': IMAGE_HANDLE_NAME,
         'st': SYSTEM_TABLE_NAME,
@@ -138,7 +139,7 @@ def rename_tables_internal(ea, regs, visited):
                 target_types = [ida_ua.o_imm, ida_ua.o_far, ida_ua.o_near]
                 if inst.Op1.type in target_types:
                     rename_tables_internal(
-                        to_visit, copy.deepcopy(regs), visited
+                        to_visit, copy.deepcopy(regs), visited, renamed
                     )
                     # Keeps saved registers based on UEFI spec
                     regs = keep_saved_regs(regs)
@@ -153,7 +154,13 @@ def rename_tables_internal(ea, regs, visited):
                   inst.Op1.type == ida_ua.o_mem:
                     print("  - Found a copy to a memory address for {}, " +
                           "updating: {}").format(names[key], disasm(inst.ea))
-                    ida_name.set_name(inst.Op1.addr, names[key])
+                    to_rename = inst.Op1.addr
+                    if to_rename not in renamed:
+                        renamed.add(to_rename)
+                        label = get_next_unused_label(
+                            names[key]
+                        )
+                        ida_name.set_name(to_rename, label)
                     break
 
             # Eliminate overwritten registers
